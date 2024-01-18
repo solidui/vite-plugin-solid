@@ -2,7 +2,7 @@ import { transformAsync, TransformOptions } from '@babel/core';
 import ts from '@babel/preset-typescript';
 import solid from 'babel-preset-solid';
 import { readFileSync } from 'fs';
-import { mergeAndConcat } from 'merge-anything';
+import { mergeAndConcat, mergeAndCompare } from 'merge-anything';
 import { createRequire } from 'module';
 import solidRefresh from 'solid-refresh/babel';
 import { createFilter } from 'vite';
@@ -381,7 +381,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
     },
 
     async transform(source, id, transformOptions) {
-      const isSsr = transformOptions && transformOptions.ssr;
+      const isSsrRequest = transformOptions?.ssr;
       const currentFileExtension = getExtension(id);
 
       const extensionsToWatch = [...(options.extensions || []), '.tsx', '.jsx'];
@@ -396,17 +396,28 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
 
       const inNodeModules = /node_modules/.test(id);
 
-      let solidOptions: { generate: 'ssr' | 'dom'; hydratable: boolean };
-
-      if (options.ssr) {
-        if (isSsr) {
-          solidOptions = { generate: 'ssr', hydratable: true };
-        } else {
-          solidOptions = { generate: 'dom', hydratable: true };
-        }
-      } else {
-        solidOptions = { generate: 'dom', hydratable: false };
-      }
+      const solidOptions = mergeAndCompare(
+        (origVal, newVal) => newVal ?? origVal,
+        // Default options
+        {
+          generate: 'dom',
+          hydratable: false,
+        },
+        // `ssr` shorthand
+        {
+          generate: options.ssr ? 'ssr' : undefined,
+          hydratable: options.ssr ? true : undefined,
+        },
+        // direct solid options
+        {
+          generate: options.solid?.generate,
+          hydratable: options.solid?.hydratable,
+        },
+        // vite request
+        {
+          generate: isSsrRequest ? 'ssr' : undefined,
+        },
+      );
 
       id = id.replace(/\?.+$/, '');
 
@@ -416,8 +427,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         root: projectRoot,
         filename: id,
         sourceFileName: id,
-        presets: [[solid, { ...solidOptions, ...(options.solid || {}) }]],
-        plugins: needHmr && !isSsr && !inNodeModules ? [[solidRefresh, { bundler: 'vite' }]] : [],
+        presets: [[solid, solidOptions]],
+        plugins:
+          needHmr && !isSsrRequest && !inNodeModules ? [[solidRefresh, { bundler: 'vite' }]] : [],
         sourceMaps: true,
         // Vite handles sourcemap flattening
         inputSourceMap: false as any,
@@ -444,7 +456,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
 
       if (options.babel) {
         if (typeof options.babel === 'function') {
-          const babelOptions = options.babel(source, id, isSsr);
+          const babelOptions = options.babel(source, id, isSsrRequest);
           babelUserOptions = babelOptions instanceof Promise ? await babelOptions : babelOptions;
         } else {
           babelUserOptions = options.babel;
